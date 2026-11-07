@@ -40,3 +40,42 @@ def test_glossary_result_reaches_the_model():
         result = agent.run_sync("RAGとは？")
     returns = _parts(result, ToolReturnPart)
     assert returns and returns[0].tool_name == "search_glossary"
+
+
+def test_saving_learning_log_requires_approval_before_writing(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.tools.LOG_DIR", tmp_path / "learning_log")
+    model = TestModel(call_tools=["save_learning_log"])
+    with agent.override(model=model):
+        result = agent.run_sync("学習記録を保存して")
+
+    assert isinstance(result.output, DeferredToolRequests)
+    assert [call.tool_name for call in result.output.approvals] == ["save_learning_log"]
+    assert not list((tmp_path / "learning_log").glob("*.json"))
+
+    with agent.override(model=TestModel(call_tools=[])):
+        approved = agent.run_sync(
+            None,
+            message_history=result.all_messages(),
+            deferred_tool_results=result.output.build_results(approve_all=True),
+        )
+
+    assert not isinstance(approved.output, DeferredToolRequests)
+    assert len(list((tmp_path / "learning_log").glob("*.json"))) == 1
+
+
+def test_denied_learning_log_is_not_written(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.tools.LOG_DIR", tmp_path / "learning_log")
+    with agent.override(model=TestModel(call_tools=["save_learning_log"])):
+        result = agent.run_sync("学習記録を保存して")
+
+    assert isinstance(result.output, DeferredToolRequests)
+    with agent.override(model=TestModel(call_tools=[])):
+        agent.run_sync(
+            None,
+            message_history=result.all_messages(),
+            deferred_tool_results=result.output.build_results(
+                approvals={result.output.approvals[0].tool_call_id: False}
+            ),
+        )
+
+    assert not list((tmp_path / "learning_log").glob("*.json"))
