@@ -16,7 +16,7 @@ import inspect
 import json
 from pathlib import Path
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.exceptions import ModelHTTPError
 from fastmcp import Client
 from pydantic_ai.mcp import MCPToolset, StdioTransport
@@ -28,6 +28,7 @@ from pydantic_ai.providers.google import GoogleProvider
 from app import tools
 from app.config import MODEL, api_error_message, get_api_key
 
+
 INSTRUCTIONS = """\
 あなたはAIエンジニアリング講座（AIE2026）の学習支援エージェントです。
 - 用語や講座に固有のことを答える前に、必ず search_glossary で用語集を確認する。
@@ -35,13 +36,16 @@ INSTRUCTIONS = """\
 - 用語集に見つからないことは、推測で断定せず「用語集にはない」と伝える。
 - 回答の最後に、関係する回（第N回）を示す。
 - 宿題の答えそのものは書かず、考え方のヒントで導く。
+- 学習ログの保存を頼まれたら save_learning_log を呼び出す。保存ツールの結果を受け取るまでは、保存したと伝えない。
 """
 
 # モデルは実行時に渡す（テストではAPIを呼ばない TestModel に差し替えるため）
-agent = Agent(instructions=INSTRUCTIONS)
+agent = Agent(instructions=INSTRUCTIONS,
+              output_type=[str, DeferredToolRequests])
 agent.tool_plain(tools.search_glossary)
 agent.tool_plain(tools.get_lecture_summary)
 agent.tool_plain(tools.make_quiz)
+agent.tool_plain(tools.save_learning_log, requires_approval=True)
 
 # 第5回: 使う MCP サーバーの設定ファイル。Claude Desktop や Cursor と同じ "mcpServers" 形式
 MCP_CONFIG = Path(__file__).resolve().parent / "mcp_servers.json"
@@ -128,6 +132,22 @@ def main() -> None:
         print("[tools] MCP サーバー（app/mcp_servers.json）")
     try:
         result = target.run_sync(args.question, model=build_model())
+        while isinstance(result.output, DeferredToolRequests):
+            requests = result.output
+            approvals = {}
+            for request in requests.approvals:
+                print(
+                    f"\nツール {request.tool_name} の実行を承認しますか？"
+                    f"\n引数: {request.args}"
+                )
+                response = input("[y/N]: ").strip().lower()
+                approvals[request.tool_call_id] = response in {"y", "yes", "はい"}
+            result = target.run_sync(
+                None,
+                model=build_model(),
+                message_history=result.all_messages(),
+                deferred_tool_results=requests.build_results(approvals=approvals),
+            )
     except ModelHTTPError as e:
         print(api_error_message(e.status_code, str(e.body)[:200]))
         raise SystemExit(1)
