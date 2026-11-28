@@ -13,6 +13,8 @@
 """
 
 import argparse
+import json
+import random
 
 from mcp.server.mcpserver import MCPServer
 
@@ -28,6 +30,32 @@ server = MCPServer(
 server.tool()(tools.search_glossary)
 
 # TODO(宿題・基礎): get_lecture_summary も公開しよう
+server.tool()(tools.get_lecture_summary)
+
+@server.tool()
+def make_quiz(lecture: int) -> str:
+    """指定した回の用語から1つを選び、
+    確認問題と答えを返す。
+
+    「第2回の確認問題を出して」のように、
+    復習用の問題を求められた時に使う。
+    """
+    if lecture < 1 or lecture > 7:
+        return "第1回から第7回の範囲で指定してください。"
+
+    terms = [e for e in tools.load_glossary() if e.get("lecture") == lecture]
+    if not terms:
+        return f"第{lecture}回の用語はまだありません。"
+
+    term = random.choice(terms)
+    return json.dumps(
+        {
+            "question": f"「{term['term']}」の意味は？",
+            "answer": term["definition"],
+        },
+        ensure_ascii=False,
+    )
+
 
 
 def main() -> None:
